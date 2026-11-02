@@ -1,0 +1,20 @@
+<launch>
+  <!-- roslaunch cv_tasks shape.launch video:=/path/to/video.mp4 -->
+  <arg name="video"/>
+  <arg name="fps" default="0"/>            <!-- 0 = use the video's own fps -->
+  <arg name="loop" default="false"/>
+  <arg name="show" default="true"/>
+  <arg name="save_to" default=""/>         <!-- e.g. results/shape.mp4 -->
+
+  <node pkg="cv_tasks" type="video_publisher.py" name="video_publisher" output="screen">
+    <param name="video" value="$(arg video)"/>
+    <param name="fps" value="$(arg fps)"/>
+    <param name="loop" value="$(arg loop)"/>
+  </node>
+
+  <node pkg="cv_tasks" type="shape_subscriber.py" name="shape_node" output="screen">
+    <param name="show" value="$(arg show)"/>
+    <param name="save_to" value="$(arg save_to)"/>
+
+  </node>
+</launch>

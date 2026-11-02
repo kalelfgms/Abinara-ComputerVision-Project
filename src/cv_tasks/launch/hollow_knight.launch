@@ -1,0 +1,28 @@
+<launch>
+  <!-- roslaunch cv_tasks hollow_knight.launch video:=/path/to/video.mp4 -->
+  <arg name="video"/>
+  <arg name="fps" default="0"/>            <!-- 0 = use the video's own fps -->
+  <arg name="loop" default="false"/>
+  <arg name="show" default="true"/>
+  <arg name="save_to" default=""/>         <!-- e.g. results/hollow_knight.mp4 -->
+  <arg name="model"/>                      <!-- path to best.onnx or best.pt -->
+  <arg name="imgsz" default="640"/>
+  <arg name="conf" default="0.4"/>
+  <arg name="iou" default="0.5"/>
+  <arg name="cuda" default="false"/>
+  <node pkg="cv_tasks" type="video_publisher.py" name="video_publisher" output="screen">
+    <param name="video" value="$(arg video)"/>
+    <param name="fps" value="$(arg fps)"/>
+    <param name="loop" value="$(arg loop)"/>
+  </node>
+
+  <node pkg="cv_tasks" type="hollow_knight_subscriber.py" name="hollow_knight_node" output="screen">
+    <param name="show" value="$(arg show)"/>
+    <param name="save_to" value="$(arg save_to)"/>
+    <param name="model" value="$(arg model)"/>
+    <param name="imgsz" value="$(arg imgsz)"/>
+    <param name="conf" value="$(arg conf)"/>
+    <param name="iou" value="$(arg iou)"/>
+    <param name="cuda" value="$(arg cuda)"/>
+  </node>
+</launch>

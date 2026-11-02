@@ -1,0 +1,28 @@
+# catkin build output
+build/
+devel/
+install/
+logs/
+.catkin_workspace
+.catkin_tools/
+src/CMakeLists.txt        # symlink created by catkin_make
+
+# Python
+__pycache__/
+*.pyc
+
+# local data (videos are large; see README for sources)
+*.mp4
+*.avi
+*.mkv
+*.mov
+src/cv_tasks/data/*
+!src/cv_tasks/data/.gitkeep
+
+# model weights: commit small ones deliberately, or use Git LFS
+src/cv_tasks/models/*
+!src/cv_tasks/models/.gitkeep
+
+# outputs produced by the nodes
+results/
+*.log
