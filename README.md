@@ -1,4 +1,13 @@
 # OPENCV Tasks
+Pada KPP ini diberi 5 task computer vision yang harus diselesaikan dengan
+Python, tiap task diberi video yang harus diolah dan memakai metode yang berbeda sesuai masalahnya; OpenCV untuk task 1-4,
+dan model YOLO untuk task 5.
+
+Pengerjaan diintegrasikan dengan ROS Noetic: satu publisher membaca video dan
+kirim tiap frame ke topic `/video/frame`, lalu subscriber tiap task
+menerima frame itu, mengolah dan menjalankan kodenya, dan menampilkan hasilnya.
+
+Dengan launch file, tiap task bisa dirun dengan 1 command `roslaunch`.
 
 ## Files
 
