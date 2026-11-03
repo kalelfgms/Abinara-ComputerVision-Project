@@ -1,102 +1,94 @@
-"""Task 1: detect triangle, square, pentagon, hexagon and circle on a
-background whose color changes over time.
+"""Task 1 - Deteksi bentuk: segitiga, persegi, pentagon, heksagon, lingkaran.
 
-The background color is estimated every frame (dominant color), so a fixed
-threshold is never needed. Everything that differs from it is a shape."""
+Ide: warna background berubah-ubah, jadi di setiap frame kita cari dulu warna
+background-nya (warna yang paling banyak muncul). Semua yang warnanya beda
+dari background dianggap bentuk."""
 
 import cv2
 import numpy as np
 
-DIFF_THRESH = 40          # min color distance from the background
-MIN_AREA_RATIO = 0.002    # ignore blobs smaller than this fraction of the frame
-CIRCLE_FILL_RATIO = 0.90  # area / min-enclosing-circle area (circle ~ 1.0)
-EPS_FACTOR = 0.03         # approxPolyDP epsilon as a fraction of the perimeter
+from .common import put_label
 
-COLORS = {
-    "Segitiga": (0, 255, 255),
-    "Persegi": (0, 255, 0),
-    "Pentagon": (255, 0, 255),
-    "Heksagon": (255, 128, 0),
-    "Lingkaran": (0, 0, 255),
-}
+DIFF_THRESH = 40        # selisih warna minimum dari background agar dianggap bentuk
+MIN_AREA_RATIO = 0.002  # bentuk lebih kecil dari 0.2% luas frame dibuang (noise)
+CIRCLE_FILL = 0.90      # luas bentuk / luas lingkaran pembungkus; lingkaran ~ 1.0
+POLY_NAMES = {3: "Segitiga", 4: "Persegi", 5: "Pentagon", 6: "Heksagon"}
+COLORS = {"Segitiga": (0, 255, 255), "Persegi": (0, 255, 0), "Pentagon": (255, 0, 255),
+          "Heksagon": (255, 128, 0), "Lingkaran": (0, 0, 255)}
 
 
 def estimate_background(frame):
-    """Dominant color: most frequent bin of a coarse 3D histogram."""
-    small = cv2.resize(frame, (96, 54), interpolation=cv2.INTER_AREA)
-    pix = small.reshape(-1, 3)
-    q = (pix >> 4).astype(np.int32)
-    key = (q[:, 0] << 8) | (q[:, 1] << 4) | q[:, 2]
-    mode_key = np.bincount(key).argmax()
-    return pix[key == mode_key].mean(axis=0)
+    """Mencari warna background = warna yang paling sering muncul di frame.
+
+    Cara kerja: frame dikecilkan (supaya cepat), warna dikelompokkan per 16 level
+    (supaya noise kecil tidak memecah satu warna menjadi banyak), lalu dicari
+    kelompok warna dengan anggota terbanyak."""
+    pix = cv2.resize(frame, (96, 54), interpolation=cv2.INTER_AREA).reshape(-1, 3)
+    q = (pix // 16).astype(np.int32)                  # kelompok warna tiap piksel
+    key = q[:, 0] * 256 + q[:, 1] * 16 + q[:, 2]      # satu nomor unik per kelompok
+    most_common = np.bincount(key).argmax()           # kelompok dengan piksel terbanyak
+    return pix[key == most_common].mean(axis=0)       # warna rata-rata kelompok itu
 
 
 def segment_shapes(frame):
+    """Membuat mask hitam-putih: putih = piksel yang berbeda dari background.
+
+    Cara kerja: hitung selisih tiap piksel terhadap warna background, piksel yang
+    selisihnya besar jadi putih. Lalu mask dirapikan dengan morphology."""
     bg = estimate_background(frame)
-    diff = np.abs(frame.astype(np.float32) - bg.astype(np.float32)).max(axis=2)
+    diff = np.abs(frame.astype(np.float32) - bg).max(axis=2)   # selisih terbesar di 3 kanal
     mask = (diff > DIFF_THRESH).astype(np.uint8) * 255
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)      # buang titik kecil
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)     # tutup lubang kecil
     return mask
 
 
 def classify(contour):
-    area = cv2.contourArea(contour)
-    peri = cv2.arcLength(contour, True)
-    if peri == 0 or area == 0:
-        return None
+    """Menebak nama bentuk dari satu kontur.
 
-    # a circle fills ~all of its enclosing circle (hexagon .83, pentagon .76,
-    # square .64, triangle .41)
+    Cara kerja:
+    1. Lingkaran hampir memenuhi lingkaran pembungkusnya (rasio ~1.0), sedangkan
+       heksagon hanya ~0.83, pentagon ~0.76, persegi ~0.64.
+    2. Selain itu, kontur disederhanakan jadi poligon (approxPolyDP) lalu dihitung
+       jumlah sudutnya: 3 = segitiga, 4 = persegi, 5 = pentagon, 6 = heksagon.
+       Lebih dari 6 sudut berarti sisinya hampir melengkung, jadi dianggap lingkaran."""
+    area = cv2.contourArea(contour)
     (_, _), radius = cv2.minEnclosingCircle(contour)
-    fill_ratio = area / (np.pi * radius * radius)
-    circularity = 4 * np.pi * area / (peri * peri)
-    if fill_ratio > CIRCLE_FILL_RATIO and circularity > 0.88:
+    if area == 0 or radius == 0:
+        return None
+    if area / (np.pi * radius * radius) > CIRCLE_FILL:
         return "Lingkaran"
 
-    n = len(cv2.approxPolyDP(contour, EPS_FACTOR * peri, True))
-    if n == 3:
-        return "Segitiga"
-    if n == 4:
-        return "Persegi"
-    if n == 5:
-        return "Pentagon"
-    if n == 6:
-        return "Heksagon"
-    if n > 6:
-        return "Lingkaran" if fill_ratio > 0.85 else None
-    return None
+    perimeter = cv2.arcLength(contour, True)
+    corners = len(cv2.approxPolyDP(contour, 0.03 * perimeter, True))
+    if corners > 6:
+        return "Lingkaran"
+    return POLY_NAMES.get(corners)
 
 
 def detect(frame):
-    """Returns ([(label, contour), ...], mask)."""
-    h, w = frame.shape[:2]
+    """Fungsi utama task: mengembalikan ([(nama, kontur), ...], mask).
+
+    Cara kerja: buat mask -> cari kontur tiap blob putih -> buang yang terlalu
+    kecil -> klasifikasi tiap kontur."""
     mask = segment_shapes(frame)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    min_area = MIN_AREA_RATIO * h * w
+    min_area = MIN_AREA_RATIO * frame.shape[0] * frame.shape[1]
     results = []
     for c in contours:
-        if cv2.contourArea(c) < min_area:
-            continue
-        label = classify(c)
-        if label is not None:
-            results.append((label, c))
+        if cv2.contourArea(c) >= min_area:
+            name = classify(c)
+            if name:
+                results.append((name, c))
     return results, mask
 
 
 def draw(frame, results):
-    scale = max(0.6, frame.shape[1] / 1600)
-    for label, c in results:
-        color = COLORS[label]
-        cv2.drawContours(frame, [c], -1, color, 3)
-        x, y, w, h = cv2.boundingRect(c)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-        m = cv2.moments(c)
-        cx = int(m["m10"] / m["m00"]) if m["m00"] else x + w // 2
-        cy = int(m["m01"] / m["m00"]) if m["m00"] else y + h // 2
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, scale, 2)
-        cv2.rectangle(frame, (cx - tw // 2 - 4, cy - th - 6), (cx + tw // 2 + 4, cy + 6), (0, 0, 0), -1)
-        cv2.putText(frame, label, (cx - tw // 2, cy), cv2.FONT_HERSHEY_SIMPLEX,
-                    scale, color, 2, cv2.LINE_AA)
+    """Menggambar garis tepi tiap bentuk dan menulis namanya di atasnya."""
+    for name, contour in results:
+        color = COLORS[name]
+        cv2.drawContours(frame, [contour], -1, color, 3)
+        x, y, _, _ = cv2.boundingRect(contour)
+        put_label(frame, name, (x, max(y - 10, 25)), scale=max(0.6, frame.shape[1] / 1600), color=color)
     return frame

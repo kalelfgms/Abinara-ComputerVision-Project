@@ -1,79 +1,90 @@
-"""Task 5: find the Hollow Knight character in a video with a YOLO model.
+"""Task 5 - Cari karakter Hollow Knight di video memakai model YOLO.
 
-Supported model files:
-  .onnx -> pure OpenCV (cv2.dnn). YOLOv5 (N, boxes, 5+nc) and
-           YOLOv8/YOLO11 (N, 4+nc, boxes) output layouts are detected automatically.
-  .pt   -> needs `pip install ultralytics`.
-"""
+Model sudah dilatih (best.onnx atau best.pt). OpenCV bertugas menyiapkan
+gambar, menjalankan model (cv2.dnn), dan menggambar hasilnya.
+
+Catatan: model ONNX punya ukuran input yang tetap, jadi imgsz saat menjalankan
+harus sama dengan imgsz saat export."""
 
 import cv2
 import numpy as np
+
+from .common import put_label
 
 BOX_COLOR = (0, 255, 0)
 
 
 def letterbox(img, size):
-    """Resize keeping aspect ratio and pad to size x size.
-    Returns (canvas, scale, left_pad, top_pad)."""
+    """Mengubah gambar jadi persegi size x size TANPA merusak rasio.
+
+    Cara kerja: gambar diperkecil sampai sisi terpanjangnya = size, lalu sisa
+    ruang diisi abu-abu. Mengembalikan (gambar, skala, padding kiri, padding atas),
+    karena angka-angka itu dibutuhkan untuk mengembalikan koordinat ke frame asli."""
     h, w = img.shape[:2]
-    r = size / max(h, w)
-    nw, nh = int(round(w * r)), int(round(h * r))
-    resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
-    top, left = (size - nh) // 2, (size - nw) // 2
+    scale = size / max(h, w)
+    new_w, new_h = round(w * scale), round(h * scale)
+    resized = cv2.resize(img, (new_w, new_h))
+    left, top = (size - new_w) // 2, (size - new_h) // 2
     canvas = np.full((size, size, 3), 114, np.uint8)
-    canvas[top:top + nh, left:left + nw] = resized
-    return canvas, r, left, top
+    canvas[top:top + new_h, left:left + new_w] = resized
+    return canvas, scale, left, top
 
 
 def decode_yolo_output(out, conf_thresh):
-    """out: 2D raw network output. Returns (boxes_xywh_center, conf, cls)."""
-    if out.shape[0] < out.shape[1]:          # YOLOv8 / v11: (4+nc, N)
-        out = out.T
-        boxes, scores = out[:, :4], out[:, 4:]
-    else:                                    # YOLOv5: (N, 5+nc)
-        boxes, scores = out[:, :4], out[:, 5:] * out[:, 4:5]
-    cls = scores.argmax(axis=1)
-    conf = scores[np.arange(len(cls)), cls]
+    """Membaca output mentah YOLOv8/YOLO11 yang bentuknya (4 + jumlah_kelas, N).
+
+    Setiap kolom = satu kotak kandidat: 4 angka pertama = kotak (cx, cy, lebar,
+    tinggi), sisanya = skor tiap kelas. Diambil kelas dengan skor tertinggi, lalu
+    kandidat dengan skor di bawah conf_thresh dibuang."""
+    out = out.T                                    # jadi (N, 4 + jumlah_kelas)
+    boxes, scores = out[:, :4], out[:, 4:]
+    cls, conf = scores.argmax(axis=1), scores.max(axis=1)
     keep = conf >= conf_thresh
     return boxes[keep], conf[keep], cls[keep]
 
 
 class OnnxDetector:
-    """YOLO ONNX inference with cv2.dnn. imgsz must equal the export size."""
+    """Menjalankan model .onnx dengan OpenCV (cv2.dnn), tanpa library tambahan."""
 
     def __init__(self, path, imgsz=640, conf=0.4, iou=0.5, names=("hollow_knight",), cuda=False):
         self.net = cv2.dnn.readNetFromONNX(path)
-        if cuda:
+        if cuda:   # hanya jalan kalau OpenCV dibuild dengan CUDA; kalau tidak, pakai CPU
             self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
         self.imgsz, self.conf, self.iou = imgsz, conf, iou
-        self.names = {i: n for i, n in enumerate(names)}
+        self.names = dict(enumerate(names))
 
     def __call__(self, frame):
-        img, r, left, top = letterbox(frame, self.imgsz)
-        blob = cv2.dnn.blobFromImage(img, 1 / 255.0, (self.imgsz, self.imgsz), swapRB=True, crop=False)
-        self.net.setInput(blob)
-        out = self.net.forward()[0]
+        """Mengembalikan [(x1, y1, x2, y2, confidence, kelas), ...] di koordinat frame asli."""
+        # 1. siapkan gambar: letterbox -> blob (skala 0-1, urutan warna RGB)
+        img, scale, left, top = letterbox(frame, self.imgsz)
+        self.net.setInput(cv2.dnn.blobFromImage(img, 1 / 255.0, (self.imgsz, self.imgsz), swapRB=True))
 
+        # 2. jalankan model
+        try:
+            out = self.net.forward()[0]
+        except cv2.error as e:
+            raise RuntimeError(
+                f"OpenCV gagal menjalankan model pada imgsz={self.imgsz}. Model ONNX punya ukuran "
+                f"input tetap: pakai imgsz yang sama dengan saat export, atau export ulang dengan "
+                f"`yolo export model=best.pt format=onnx imgsz={self.imgsz}`.\nError asli: {e}") from None
+
+        # 3. baca hasilnya, lalu kembalikan koordinat dari gambar letterbox ke frame asli
         boxes, conf, cls = decode_yolo_output(out, self.conf)
         if len(conf) == 0:
             return []
-
         cx, cy, bw, bh = boxes.T
-        x, y = (cx - bw / 2 - left) / r, (cy - bh / 2 - top) / r
-        bw, bh = bw / r, bh / r
-        xywh = np.stack([x, y, bw, bh], axis=1)
+        xywh = np.stack([(cx - bw / 2 - left) / scale, (cy - bh / 2 - top) / scale,
+                         bw / scale, bh / scale], axis=1)      # (x kiri, y atas, lebar, tinggi)
 
-        idx = cv2.dnn.NMSBoxes(xywh.tolist(), conf.tolist(), self.conf, self.iou)
-        dets = []
-        for i in np.array(idx).flatten():
-            x0, y0, w0, h0 = xywh[i]
-            dets.append((int(x0), int(y0), int(x0 + w0), int(y0 + h0), float(conf[i]), int(cls[i])))
-        return dets
+        # 4. NMS: kalau beberapa kotak menumpuk di objek yang sama, simpan yang terbaik
+        keep = np.array(cv2.dnn.NMSBoxes(xywh.tolist(), conf.tolist(), self.conf, self.iou)).flatten()
+        return [(int(xywh[i, 0]), int(xywh[i, 1]), int(xywh[i, 0] + xywh[i, 2]),
+                 int(xywh[i, 1] + xywh[i, 3]), float(conf[i]), int(cls[i])) for i in keep]
 
 
 class UltralyticsDetector:
-    """YOLO .pt inference with ultralytics."""
+    """Alternatif untuk file .pt (butuh `pip install ultralytics`). Bisa memakai GPU."""
 
     def __init__(self, path, imgsz=640, conf=0.4, iou=0.5, cuda=False):
         from ultralytics import YOLO
@@ -83,26 +94,22 @@ class UltralyticsDetector:
         self.device = 0 if cuda else "cpu"
 
     def __call__(self, frame):
-        res = self.model.predict(frame, imgsz=self.imgsz, conf=self.conf, iou=self.iou,
-                                 device=self.device, verbose=False)[0]
-        dets = []
-        for b in res.boxes:
-            x1, y1, x2, y2 = (int(v) for v in b.xyxy[0].tolist())
-            dets.append((x1, y1, x2, y2, float(b.conf[0]), int(b.cls[0])))
-        return dets
+        result = self.model.predict(frame, imgsz=self.imgsz, conf=self.conf, iou=self.iou,
+                                    device=self.device, verbose=False)[0]
+        return [(*(int(v) for v in b.xyxy[0].tolist()), float(b.conf[0]), int(b.cls[0]))
+                for b in result.boxes]
 
 
 def load_detector(path, imgsz=640, conf=0.4, iou=0.5, names=("hollow_knight",), cuda=False):
+    """Memilih detektor dari ekstensi file: .onnx -> OpenCV, selain itu -> ultralytics."""
     if path.lower().endswith(".onnx"):
         return OnnxDetector(path, imgsz, conf, iou, names, cuda)
     return UltralyticsDetector(path, imgsz, conf, iou, cuda)
 
 
-def draw(frame, dets, names):
-    for (x1, y1, x2, y2, c, k) in dets:
-        label = f"{names.get(k, k)} {c:.2f}"
+def draw(frame, detections, names):
+    """Menggambar kotak dan label (nama kelas + confidence) tiap deteksi."""
+    for x1, y1, x2, y2, conf, cls in detections:
         cv2.rectangle(frame, (x1, y1), (x2, y2), BOX_COLOR, 2)
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-        cv2.rectangle(frame, (x1, y1 - th - 8), (x1 + tw + 6, y1), BOX_COLOR, -1)
-        cv2.putText(frame, label, (x1 + 3, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
+        put_label(frame, f"{names.get(cls, cls)} {conf:.2f}", (x1, max(y1 - 8, 20)), 0.6, BOX_COLOR)
     return frame

@@ -1,78 +1,65 @@
-"""Task 4: remove speckle noise from a noisy mask video (rotating white donut
-with white dots on black) while keeping the object and its real hole."""
+"""Task 4 - Hapus noise pada video mask (donat putih berputar dengan titik-titik
+putih di sekitarnya).
+
+Ide: objek asli itu besar dan hanya satu, sedangkan noise berupa titik atau
+garis yang kecil. Jadi cukup simpan bagian putih yang besar."""
 
 import cv2
 import numpy as np
 
 from .common import put_label
 
-REL_KEEP = 0.15          # keep blobs >= 15% of the largest blob
-MIN_AREA_RATIO = 0.002   # ... and >= 0.2% of the frame
-HOLE_REL = 0.01          # background holes < 1% of the object area are noise
-SMOOTH_K = 7             # median blur size (odd)
+THRESH = 127           # piksel lebih terang dari ini dianggap putih
+REL_KEEP = 0.15        # simpan bagian putih yang luasnya >= 15% dari yang terbesar
+MIN_AREA_RATIO = 0.002 # ... dan minimal 0.2% luas frame
+SMOOTH_K = 7           # ukuran median blur (harus ganjil) untuk menghaluskan tepi
 
 
-def keep_large_components(binary, rel_keep, min_area):
+def keep_large_components(binary):
+    """Hanya menyimpan bagian putih yang besar. Mengembalikan (mask, jumlah objek).
+
+    Cara kerja: connectedComponentsWithStats memberi nomor tiap bagian putih yang
+    terhubung beserta luasnya. Bagian yang luasnya di bawah batas dibuang,
+    sehingga bintik dan garis tipis hilang tapi donat tetap utuh. Lubang donat
+    ikut aman, karena lubang itu bagian hitam, bukan putih."""
     n, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
-    if n <= 1:
+    if n <= 1:                                              # tidak ada apa pun yang putih
         return np.zeros_like(binary), 0
-    areas = stats[1:, cv2.CC_STAT_AREA]
-    thresh = max(min_area, rel_keep * areas.max())
-    lut = np.zeros(n, np.uint8)
-    lut[1:] = (areas >= thresh).astype(np.uint8) * 255
-    return lut[labels], int((areas >= thresh).sum())
-
-
-def fill_small_holes(mask, hole_rel):
-    """Fill small background islands enclosed by the object."""
-    h, w = mask.shape
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(cv2.bitwise_not(mask), connectivity=4)
-    if n <= 1:
-        return mask
-    max_hole = hole_rel * cv2.countNonZero(mask)
-    lut = np.zeros(n, np.uint8)
-    for i in range(1, n):
-        x, y, bw, bh, area = stats[i]
-        touches_border = x == 0 or y == 0 or x + bw == w or y + bh == h
-        if not touches_border and area < max_hole:
-            lut[i] = 255
-    return cv2.bitwise_or(mask, lut[labels])
+    areas = stats[1:, cv2.CC_STAT_AREA]                     # luas tiap bagian (tanpa background)
+    min_area = max(MIN_AREA_RATIO * binary.size, REL_KEEP * areas.max())
+    keep = np.zeros(n, np.uint8)
+    keep[1:] = (areas >= min_area) * 255                    # 255 = simpan, 0 = buang
+    return keep[labels], int((areas >= min_area).sum())
 
 
 def clean(frame, proc_width=0):
-    """Returns (clean binary mask at the frame's resolution, number of objects)."""
+    """Fungsi utama task. Mengembalikan (mask bersih seukuran frame, jumlah objek).
+
+    Cara kerja: grayscale -> blur ringan -> threshold jadi hitam-putih ->
+    buang bagian putih yang kecil -> median blur untuk menghaluskan tepi."""
     h, w = frame.shape[:2]
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    if proc_width and w > proc_width:                       # opsional: kecilkan biar lebih cepat
+        gray = cv2.resize(gray, (proc_width, int(h * proc_width / w)), interpolation=cv2.INTER_AREA)
 
-    small = gray
-    if proc_width and w > proc_width:
-        small = cv2.resize(gray, (proc_width, int(h * proc_width / w)), interpolation=cv2.INTER_AREA)
+    _, binary = cv2.threshold(cv2.GaussianBlur(gray, (3, 3), 0), THRESH, 255, cv2.THRESH_BINARY)
+    mask, n_objects = keep_large_components(binary)
+    mask = cv2.medianBlur(mask, SMOOTH_K)
 
-    blur = cv2.GaussianBlur(small, (3, 3), 0)
-    otsu, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    if otsu < 60:  # Otsu failed (almost empty frame)
-        _, binary = cv2.threshold(blur, 127, 255, cv2.THRESH_BINARY)
-
-    mask, n_obj = keep_large_components(binary, REL_KEEP, MIN_AREA_RATIO * binary.size)
-    mask = fill_small_holes(mask, HOLE_REL)
-    mask = cv2.medianBlur(mask, SMOOTH_K | 1)
-
-    if mask.shape != gray.shape:
+    if mask.shape[:2] != (h, w):                            # besarkan kembali ke ukuran frame
         mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
         _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-    return mask, n_obj
-
-
-def _fit_width(img, width):
-    h, w = img.shape[:2]
-    return cv2.resize(img, (width, int(h * width / w)), interpolation=cv2.INTER_AREA)
+    return mask, n_objects
 
 
 def process(frame, proc_width=0, view_width=640):
-    """Side-by-side: noisy input | cleaned mask."""
-    mask, n_obj = clean(frame, proc_width)
-    left = _fit_width(frame, view_width)
-    right = _fit_width(cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR), view_width)
-    put_label(left, "Input (noisy)", org=(10, 30), scale=0.8, color=(0, 255, 255))
-    put_label(right, f"Cleaned | objects {n_obj}", org=(10, 30), scale=0.8, color=(0, 255, 0))
+    """Menampilkan input yang noisy (kiri) dan hasil bersih (kanan) berdampingan."""
+    mask, n_objects = clean(frame, proc_width)
+
+    def fit(img):                                           # samakan lebar tampilan
+        return cv2.resize(img, (view_width, int(img.shape[0] * view_width / img.shape[1])))
+
+    left, right = fit(frame), fit(cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR))
+    put_label(left, "Input (noisy)", (10, 30), 0.8, (0, 255, 255))
+    put_label(right, f"Hasil | objek: {n_objects}", (10, 30), 0.8, (0, 255, 0))
     return np.hstack([left, right])
