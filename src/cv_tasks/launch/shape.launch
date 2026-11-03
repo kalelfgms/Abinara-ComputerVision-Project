@@ -15,6 +15,6 @@
   <node pkg="cv_tasks" type="shape_subscriber.py" name="shape_node" output="screen">
     <param name="show" value="$(arg show)"/>
     <param name="save_to" value="$(arg save_to)"/>
-
+    <param name="window_width" value="1024"/>
   </node>
 </launch>

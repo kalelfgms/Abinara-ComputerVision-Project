@@ -16,5 +16,6 @@
     <param name="show" value="$(arg show)"/>
     <param name="save_to" value="$(arg save_to)"/>
     <param name="proc_width" value="$(arg proc_width)"/>
+    <param name="window_width" value="1600"/>
   </node>
 </launch>

@@ -24,5 +24,7 @@
     <param name="conf" value="$(arg conf)"/>
     <param name="iou" value="$(arg iou)"/>
     <param name="cuda" value="$(arg cuda)"/>
+
+    <param name="window_width" value="1024"/>
   </node>
 </launch>
